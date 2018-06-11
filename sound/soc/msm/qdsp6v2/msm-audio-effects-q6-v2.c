@@ -49,9 +49,6 @@ bool msm_audio_effects_is_effmodule_supp_in_top(int effect_module,
 	case EQ_MODULE:
 		switch (topology) {
 		case ASM_STREAM_POSTPROC_TOPO_ID_SA_PLUS:
-#if defined(CONFIG_SND_LGE_EFFECT) || defined(CONFIG_SND_LGE_NORMALIZER) || defined(CONFIG_SND_LGE_MABL)
-		case ASM_STREAM_POSTPROC_TOPO_ID_OFFLOAD_LGE:
-#endif
 		case ASM_STREAM_POSTPROC_TOPO_ID_HPX_PLUS:
 		case ASM_STREAM_POSTPROC_TOPO_ID_HPX_MASTER:
 			return true;

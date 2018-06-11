@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -26,16 +26,7 @@
 #include <sound/msm-dts-eagle.h>
 #include "msm-dts-srs-tm-config.h"
 #include <sound/adsp_err.h>
-#define LVVE
-#if defined(LVVE)
-#define VPM_TX_SM_LVVEFQ    (0x1000BFF0)
-#define VPM_TX_DM_LVVEFQ    (0x1000BFF1)
-#endif
-#ifdef CONFIG_MACH_LGE
-#define AUDIO_RX_LGE        (0x10010712)
-#endif
 
-#define VPM_TX_QM_FLUENCE_PROV2 (0x00010F87)
 #define TIMEOUT_MS 1000
 
 #define RESET_COPP_ID 99
@@ -947,7 +938,7 @@ int adm_programable_channel_mixer(int port_id, int copp_idx, int session_id,
 	index = index + ch_mixer->input_channels[channel_index];
 	ret = adm_populate_channel_weight(&adm_pspd_params[index],
 					ch_mixer, channel_index);
-	if (!ret) {
+	if (ret) {
 		pr_err("%s: fail to get channel weight with error %d\n",
 			__func__, ret);
 		goto fail_cmd;
@@ -2614,14 +2605,6 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 		 __func__, port_id, path, rate, channel_mode, perf_mode,
 		 topology);
 
-
-	/* For AUDIO_RX_LGE topology only, force 24 bit */
-#ifdef CONFIG_MACH_LGE
-	if(topology == AUDIO_RX_LGE) {
-		bit_width = 24;
-	}
-#endif
-
 	/* For DTS EAGLE only, force 24 bit */
 	if ((topology == ADM_CMD_COPP_OPEN_TOPOLOGY_ID_DTS_HPX) &&
 		(perf_mode == LEGACY_PCM_MODE)) {
@@ -2671,13 +2654,8 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 	}
 
 	if ((topology == VPM_TX_SM_ECNS_COPP_TOPOLOGY) ||
-#if defined(LVVE)
-	    (topology == VPM_TX_SM_LVVEFQ ) ||
-	    (topology == VPM_TX_DM_LVVEFQ ) ||
-#endif
 	    (topology == VPM_TX_DM_FLUENCE_COPP_TOPOLOGY) ||
-	    (topology == VPM_TX_DM_RFECNS_COPP_TOPOLOGY) ||
-	    (topology == VPM_TX_QM_FLUENCE_PROV2))
+	    (topology == VPM_TX_DM_RFECNS_COPP_TOPOLOGY))
 		rate = 16000;
 
 	copp_idx = adm_get_idx_if_copp_exists(port_idx, topology, perf_mode,
@@ -2852,7 +2830,6 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 		if (!ret) {
 			pr_err("%s: ADM open timedout for port_id: 0x%x for [0x%x]\n",
 						__func__, tmp_port, port_id);
-			panic("[Audio BSP] Force Crash due to adm_open timed out");
 			return -EINVAL;
 		} else if (atomic_read(&this_adm.copp.stat
 					[port_idx][copp_idx]) > 0) {
