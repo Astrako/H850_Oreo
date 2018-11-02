@@ -4821,7 +4821,7 @@ static int ufshcd_slave_alloc(struct scsi_device *sdev)
 	/* REPORT SUPPORTED OPERATION CODES is not supported */
 	sdev->no_report_opcodes = 1;
 
-	/* WRITE_SAME command is not supported */
+	/* WRITE_SAME command is not supported*/
 	sdev->no_write_same = 1;
 
 	ufshcd_set_queue_depth(sdev);
@@ -5545,7 +5545,7 @@ static void ufshcd_exception_event_handler(struct work_struct *work)
 	hba = container_of(work, struct ufs_hba, eeh_work);
 
 	pm_runtime_get_sync(hba->dev);
-	scsi_block_requests(hba->host);
+	ufshcd_scsi_block_requests(hba);
 	err = ufshcd_get_ee_status(hba, &status);
 	if (err) {
 		dev_err(hba->dev, "%s: failed to get exception status %d\n",
@@ -5554,16 +5554,115 @@ static void ufshcd_exception_event_handler(struct work_struct *work)
 	}
 
 	status &= hba->ee_ctrl_mask;
-	if (status & MASK_EE_URGENT_BKOPS) {
-		err = ufshcd_urgent_bkops(hba);
-		if (err < 0)
-			dev_err(hba->dev, "%s: failed to handle urgent bkops %d\n",
-					__func__, err);
-	}
+
+	if (status & MASK_EE_URGENT_BKOPS)
+		ufshcd_bkops_exception_event_handler(hba);
+
 out:
-	scsi_unblock_requests(hba->host);
+	ufshcd_scsi_unblock_requests(hba);
 	pm_runtime_put_sync(hba->dev);
 	return;
+}
+
+/* Complete requests that have door-bell cleared */
+static void ufshcd_complete_requests(struct ufs_hba *hba)
+{
+	ufshcd_transfer_req_compl(hba);
+	ufshcd_tmc_handler(hba);
+}
+
+/**
+ * ufshcd_quirk_dl_nac_errors - This function checks if error handling is
+ *				to recover from the DL NAC errors or not.
+ * @hba: per-adapter instance
+ *
+ * Returns true if error handling is required, false otherwise
+ */
+static bool ufshcd_quirk_dl_nac_errors(struct ufs_hba *hba)
+{
+	unsigned long flags;
+	bool err_handling = true;
+
+	spin_lock_irqsave(hba->host->host_lock, flags);
+	/*
+	 * UFS_DEVICE_QUIRK_RECOVERY_FROM_DL_NAC_ERRORS only workaround the
+	 * device fatal error and/or DL NAC & REPLAY timeout errors.
+	 */
+	if (hba->saved_err & (CONTROLLER_FATAL_ERROR | SYSTEM_BUS_FATAL_ERROR))
+		goto out;
+
+	if ((hba->saved_err & DEVICE_FATAL_ERROR) ||
+	    ((hba->saved_err & UIC_ERROR) &&
+	     (hba->saved_uic_err & UFSHCD_UIC_DL_TCx_REPLAY_ERROR))) {
+		/*
+		 * we have to do error recovery but atleast silence the error
+		 * logs.
+		 */
+		hba->silence_err_logs = true;
+		goto out;
+	}
+
+	if ((hba->saved_err & UIC_ERROR) &&
+	    (hba->saved_uic_err & UFSHCD_UIC_DL_NAC_RECEIVED_ERROR)) {
+		int err;
+		/*
+		 * wait for 50ms to see if we can get any other errors or not.
+		 */
+		spin_unlock_irqrestore(hba->host->host_lock, flags);
+		msleep(50);
+		spin_lock_irqsave(hba->host->host_lock, flags);
+
+		/*
+		 * now check if we have got any other severe errors other than
+		 * DL NAC error?
+		 */
+		if ((hba->saved_err & INT_FATAL_ERRORS) ||
+		    ((hba->saved_err & UIC_ERROR) &&
+		    (hba->saved_uic_err & ~UFSHCD_UIC_DL_NAC_RECEIVED_ERROR))) {
+			if (((hba->saved_err & INT_FATAL_ERRORS) ==
+				DEVICE_FATAL_ERROR) || (hba->saved_uic_err &
+					~UFSHCD_UIC_DL_NAC_RECEIVED_ERROR))
+				hba->silence_err_logs = true;
+			goto out;
+		}
+
+		/*
+		 * As DL NAC is the only error received so far, send out NOP
+		 * command to confirm if link is still active or not.
+		 *   - If we don't get any response then do error recovery.
+		 *   - If we get response then clear the DL NAC error bit.
+		 */
+
+		/* silence the error logs from NOP command */
+		hba->silence_err_logs = true;
+		spin_unlock_irqrestore(hba->host->host_lock, flags);
+		err = ufshcd_verify_dev_init(hba);
+		spin_lock_irqsave(hba->host->host_lock, flags);
+		hba->silence_err_logs = false;
+
+		if (err) {
+			hba->silence_err_logs = true;
+			goto out;
+		}
+
+		/* Link seems to be alive hence ignore the DL NAC errors */
+		if (hba->saved_uic_err == UFSHCD_UIC_DL_NAC_RECEIVED_ERROR)
+			hba->saved_err &= ~UIC_ERROR;
+		/* clear NAC error */
+		hba->saved_uic_err &= ~UFSHCD_UIC_DL_NAC_RECEIVED_ERROR;
+		if (!hba->saved_uic_err) {
+			err_handling = false;
+			goto out;
+		}
+		/*
+		 * there seems to be some errors other than NAC, so do error
+		 * recovery
+		 */
+		hba->silence_err_logs = true;
+	}
+out:
+	spin_unlock_irqrestore(hba->host->host_lock, flags);
+	return err_handling;
 }
 
 /**
@@ -7327,14 +7426,11 @@ static int ufshcd_config_vreg(struct device *dev,
 		struct ufs_vreg *vreg, bool on)
 {
 	int ret = 0;
-	struct regulator *reg;
-	const char *name;
+	struct regulator *reg = vreg->reg;
+	const char *name = vreg->name;
 	int min_uV, uA_load;
 
 	BUG_ON(!vreg);
-
-	reg = vreg->reg;
-	name = vreg->name;
 
 	if (regulator_count_voltages(reg) > 0) {
 		min_uV = on ? vreg->min_uV : 0;
