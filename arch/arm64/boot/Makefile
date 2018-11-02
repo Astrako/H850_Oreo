@@ -20,23 +20,40 @@ else
 include $(srctree)/arch/arm64/boot/dts/lge/Makefile
 endif
 
-targets := Image Image.gz
+targets := Image Image.gz Image.lz4
 
 DTB_NAMES := $(subst $\",,$(CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES))
 ifneq ($(DTB_NAMES),)
 DTB_LIST := $(addsuffix .dtb,$(DTB_NAMES))
-else
-DTB_LIST := $(dtb-y)
-endif
 DTB_OBJS := $(addprefix $(obj)/dts/,$(DTB_LIST))
+else
+DTB_OBJS := $(shell find $(obj)/dts/ -name \*.dtb)
+endif
 
 $(obj)/Image: vmlinux FORCE
 	$(call if_changed,objcopy)
 
+$(obj)/Image-dtb: $(obj)/Image $(DTB_OBJS) FORCE
+	$(call if_changed,cat)
+
 $(obj)/Image.gz: $(obj)/Image FORCE
 	$(call if_changed,gzip)
 
+$(obj)/Image.lz4: $(obj)/Image FORCE
+	$(call if_changed,lz4)
+
+
 $(obj)/Image.gz-dtb: $(obj)/Image.gz $(DTB_OBJS) FORCE
+	$(call if_changed,cat)
+
+$(obj)/Image.lz4-dtb: $(obj)/Image.lz4 $(DTB_OBJS) FORCE
+	$(call if_changed,cat)
+
+$(obj)/Image-dtb-hdr: $(obj)/Image FORCE
+	echo -n 'UNCOMPRESSED_IMG' > $@ && \
+	$(call size_append, $(filter-out FORCE,$^)) >> $@
+
+$(obj)/Image-dtb: $(obj)/Image-dtb-hdr $(obj)/Image $(DTB_OBJS) FORCE
 	$(call if_changed,cat)
 
 install: $(obj)/Image
