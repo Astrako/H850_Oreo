@@ -1,4 +1,6 @@
 #### H-KERNEL DEFCONFIG ####
+CONFIG_LOCALVERSION="-H-KERNEL-V1.0"
+
 
 
 # Display options
